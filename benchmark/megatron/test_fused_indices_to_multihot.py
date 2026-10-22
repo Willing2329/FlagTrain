@@ -38,7 +38,11 @@ _SHAPES = [
 ]
 
 if flag_train.vendor_name == "ascend":
+    # Auto-maps the logical blocks onto the physical cores, which allows a
+    # grid above 65535.
     os.environ["TRITON_ALL_BLOCKS_PARALLEL"] = "1"
+    # Megatron reference kernel does not compile on Ascend when top-k
+    # or the expert count is 1.
     _SHAPES = [shape for shape in _SHAPES if shape[1] > 1]
 
 
@@ -58,7 +62,7 @@ def fused_indices_to_multihot_input_fn(shape, dtype, device):
 
 
 @pytest.mark.fused_indices_to_multihot
-def test_fused_indices_to_multihot_perf():
+def test_fused_indices_to_multihot():
     bench = _FusedIndicesToMultihotBenchmark(
         input_fn=fused_indices_to_multihot_input_fn,
         op_name="fused_indices_to_multihot",

@@ -29,13 +29,13 @@ _NUM_WARPS = 1
 # Bytes one program may hold live.
 _TILE_BYTES = 24 * 1024
 
-# Programs the grid should keep in flight when the token count allows it. A
-# tall tile leaves most of the vector cores idle on narrow expert maps.
-_MIN_PROGRAMS = 64
+# Programs the grid should keep in flight when the token count allows it.
+_MIN_PROGRAMS = 32
 
 _INDEX_DTYPES = (torch.int32, torch.int64)
 
 _PROBS_DTYPES = (torch.float16, torch.bfloat16, torch.float32, torch.float64)
+
 
 # Elements the (ROWS, TOPK_BLOCK, EXPERTS_BLOCK) selection tile may hold.
 _TOP_K_TILE_ELEMS = 8192
@@ -44,11 +44,8 @@ _TOP_K_TILE_ELEMS = 8192
 def _rows_per_prog(n_rows, topk_block, experts_block, elem_bytes, index_bytes):
     """Rows one program carries, floored to a power of 2.
 
-    A row costs the expert map itself plus the id (loaded and sanitised) and the
-    probability that come with it, so narrow maps are bounded by the per-token
-    inputs rather than by the output. The selection tile is top-k-wide, so its
-    element budget usually sets the tighter bound. The tile is also capped so
-    that enough programs stay in flight to fill the device.
+    Bounded by the per-row byte budget, the minimum program count, and the
+    top-k-wide selection tile's element budget.
     """
     per_row_bytes = experts_block * elem_bytes + 2 * index_bytes + elem_bytes
     rows = max(1, min(n_rows, _TILE_BYTES // per_row_bytes))
@@ -101,11 +98,9 @@ def _indices_to_multihot_kernel(
 ):
     """Turn ``ROWS`` tokens' top-k expert ids into ``num_experts``-wide rows.
 
-    The top-k columns are compared against the whole expert row in one
-    (ROWS, TOPK_BLOCK, EXPERTS_BLOCK) selection tile and reduced along the
-    top-k axis, so every output element is written exactly once by a block
-    store. A zero-then-scatter formulation needs two overlapping stores and a
-    barrier, which the backend cannot lower for narrow rows.
+    One (ROWS, TOPK_BLOCK, EXPERTS_BLOCK) tile is compared against the expert
+    rows and reduced along top-k, so every output element is written once
+    without the overlapping zero-then-scatter stores.
     """
     row = tl.program_id(0) * ROWS + tl.arange(0, ROWS)
     row_mask = row < num_tokens
@@ -119,10 +114,9 @@ def _indices_to_multihot_kernel(
     in_mask = row_mask[:, None] & (topk_col[None, :] < TOPK)
     indices = tl.load(indices_ptr + in_off, mask=in_mask, other=NUM_EXPERTS)
     probs = tl.load(probs_ptr + in_off, mask=in_mask, other=0.0)
-    # -1 (Megatron's padding) and anything else outside [0, NUM_EXPERTS) goes
-    # to the never-matching column NUM_EXPERTS. Compare in fp32: int64 compares
-    # scalarise on this backend, and integers below 2**24 convert exactly, so
-    # INT64_MIN and friends are still rejected.
+    # -1 (Megatron's padding) and other out-of-range ids map to the
+    # never-matching column NUM_EXPERTS. fp32 compares avoid this backend's
+    # scalar int64 path and stay exact below 2**24, INT64_MIN included.
     indices_f = indices.to(tl.float32)
     in_range = (indices_f >= 0.0) & (indices_f < NUM_EXPERTS * 1.0)
     indices = tl.where(in_range, indices.to(tl.int32), NUM_EXPERTS)
