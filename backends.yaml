@@ -29,6 +29,8 @@ backends:
       - deepspeed==0.19.7
       - deepspeed-kernels==0.0.1
       - nvidia-cutlass==3.8.0.0
+      - nvidia-resiliency-ext==0.6.0
+      - megatron-core==0.19.2
 
   ascend-cann900:
     python: "3.11"
@@ -60,6 +62,7 @@ backends:
       # installed after the shared test dependencies, so it decides the final
       # version instead of the other way round.
       - numpy==1.26.4
+      - megatron-core==0.17.1
 
   hygon:
     python: "3.10"
